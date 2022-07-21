@@ -37,23 +37,24 @@ where
     pub async fn start_epoch_change(&self) -> SuiResult {
         let epoch = self.state.committee.load().epoch;
         info!(?epoch, "Starting epoch change");
-        if let Some(checkpoints) = &self.state.checkpoints {
-            assert!(
-                checkpoints.lock().is_ready_to_start_epoch_change(),
-                "start_epoch_change called at the wrong checkpoint",
-            );
-        } else {
-            unreachable!();
-        }
+        let checkpoints = self.state.checkpoints.as_ref().unwrap();
+        assert!(
+            checkpoints.lock().is_ready_to_start_epoch_change(),
+            "start_epoch_change called at the wrong checkpoint",
+        );
 
         self.state.halt_validator();
         info!(?epoch, "Validator halted for epoch change");
-        // TODO: The following doesn't work: we also need to make sure that the transactions
-        // all have been included in a batch (and hence will be included in the next checkpoint
-        // proposal).
+        // Check that all transactions that have been sequenced and are about to be committed get
+        // committed. Also make sure that all the transactions that have been committed have made
+        // into a batch. This ensures that they will all made to the next checkpoint proposal.
         // TODO: Use a conditional variable pattern instead of while + sleep.
-        while !self.state.batch_notifier.ticket_drained() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        while !self
+            .state
+            .batch_notifier
+            .ticket_drained_til(checkpoints.lock().next_transaction_sequence_expected())
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         info!(?epoch, "Epoch change started");
         Ok(())
@@ -65,7 +66,8 @@ where
     pub async fn finish_epoch_change(&self) -> SuiResult {
         let epoch = self.state.committee.load().epoch;
         info!(?epoch, "Finishing epoch change");
-        let last_checkpoint = if let Some(checkpoints) = &self.state.checkpoints {
+        let checkpoints = self.state.checkpoints.as_ref().unwrap();
+        {
             let mut checkpoints = checkpoints.lock();
             assert!(
                 checkpoints.is_ready_to_finish_epoch_change(),
@@ -84,12 +86,9 @@ where
 
             self.state.database.remove_all_pending_certificates()?;
 
-            checkpoints.next_checkpoint() - 1
-
             // drop checkpoints lock
-        } else {
-            unreachable!();
-        };
+        }
+        let last_checkpoint = checkpoints.lock().next_checkpoint() - 1;
 
         let sui_system_state = self.state.get_sui_system_state_object().await?;
         let next_epoch = sui_system_state.epoch + 1;
