@@ -33,6 +33,8 @@ bcs = "0.1.3"
 sui-core = { path = "../sui-core" }
 sui-config = { path = "../sui-config" }
 sui-types = { path = "../sui-types" }
+sui-gateway = { path = "../sui-gateway" }
+sui-json-rpc-types = { path = "../sui-json-rpc-types" }
 
 move-core-types = { git = "https://github.com/move-language/move", rev = "7733658048a8bc80e9ba415b8c99aed9234eaa5f", features = ["address20"] }
 narwhal-node = { git = "https://github.com/MystenLabs/narwhal", rev = "f50af9eb40130fb404a678e38d0671fc33f60318", package = "node" }
