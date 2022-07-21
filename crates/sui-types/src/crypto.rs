@@ -7,6 +7,7 @@ use std::str::FromStr;
 use anyhow::Error;
 use base64ct::Encoding;
 use digest::Digest;
+use narwhal_crypto::bls12381::{BLS12381Signature, BLS12381PublicKey, BLS12381KeyPair};
 use narwhal_crypto::ed25519::{
     Ed25519AggregateSignature, Ed25519KeyPair, Ed25519PrivateKey, Ed25519PublicKey,
     Ed25519Signature,
@@ -29,21 +30,20 @@ use crate::error::{SuiError, SuiResult};
 use crate::sui_serde::{Base64, Readable, SuiBitmap};
 
 // Comment the one you want to use
-pub type AuthorityKeyPair = Ed25519KeyPair;
-pub type AccountKeyPair = Ed25519KeyPair;
 
 // Authority Objects
+pub type AuthorityKeyPair = Ed25519KeyPair;
 pub type AuthorityPrivateKey = Ed25519PrivateKey;
 pub type AuthorityPublicKey = Ed25519PublicKey;
 pub type AuthoritySignature = Ed25519Signature;
 pub type AggregateAuthoritySignature = Ed25519AggregateSignature;
 
-// Accoutn Objects
+// Account Objects
+pub type AccountKeyPair = Ed25519KeyPair;
 pub type AccountPublicKey = Ed25519PublicKey;
 pub type AccountPrivateKey = Ed25519PrivateKey;
 pub type AccountSignature = Ed25519Signature;
 pub type AggregateAccountSignature = Ed25519AggregateSignature;
-
 //
 // Define Bytes representation of the Authority's PublicKey
 //
@@ -157,20 +157,6 @@ impl SuiAuthoritySignature for AuthoritySignature {
     }
 }
 
-impl signature::Signer<Signature> for AuthorityKeyPair {
-    fn try_sign(&self, msg: &[u8]) -> Result<Signature, signature::Error> {
-        let signature_bytes: AccountSignature =
-            <Self as signature::Signer<AccountSignature>>::try_sign(self, msg)?;
-        let public_key_bytes: AuthorityPublicKeyBytes = self.public().into();
-
-        let mut result_bytes = [0u8; SUI_SIGNATURE_LENGTH];
-        let sig_length = <AuthorityKeyPair as narwhal_crypto::traits::KeyPair>::Sig::LENGTH;
-        result_bytes[..sig_length].copy_from_slice(signature_bytes.as_ref());
-        result_bytes[sig_length..].copy_from_slice(public_key_bytes.as_ref());
-        Ok(Signature(result_bytes))
-    }
-}
-
 impl signature::Verifier<Signature> for AuthorityPublicKeyBytes {
     fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), signature::Error> {
         // deserialize the signature
@@ -230,28 +216,87 @@ pub fn get_key_pair_from_bytes<KP: KeypairTraits>(bytes: &[u8]) -> SuiResult<(Su
     Ok((kp.public().into(), kp))
 }
 
-// TODO: replace this with a byte interpretation based on multicodec
-pub const SUI_SIGNATURE_LENGTH: usize = AccountPublicKey::LENGTH + AccountSignature::LENGTH;
+// 
+// Account Signatures
+// 
 
-#[serde_as]
-#[derive(Eq, PartialEq, Copy, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Signature(
-    #[schemars(with = "Base64")]
-    #[serde_as(as = "Readable<Base64, Bytes>")]
-    [u8; SUI_SIGNATURE_LENGTH],
-);
+// 1. Eddsa
+// 2. Ecdsa
+// Enums for Signatures
+const FLAG_LENGTH: usize = 1;
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub enum Signature {
+    Ed25519(Ed25519SuiSignature),
+    BLS12381(BLS12381SuiSignature),
+    Empty
+}
+
+
+// Can refactor this with a library
+impl Signature {
+    pub fn verify<T>(&self, value: &T, author: SuiAddress) -> SuiResult<()> 
+        where T: Signable<Vec<u8>>,
+    {
+        match self {
+            Self::Ed25519(sig) => sig.verify(value, author),
+            Self::BLS12381(sig) => sig.verify(value, author),
+            Self::Empty => Err(SuiError::InvalidSignature {
+                error: "Empty signature".to_string(),
+            })
+        }
+    }
+
+    pub fn public_key_bytes(&self) -> &[u8] {
+        match self {
+            Self::Ed25519(sig) => sig.public_key_bytes(),
+            Self::BLS12381(sig) => sig.public_key_bytes(),
+            Self::Empty => &[]
+        }
+    }
+
+    pub fn FLAG_bytes(&self) -> &[u8] {
+        match self {
+            Self::Ed25519(sig) => sig.FLAG_bytes(),
+            Self::BLS12381(sig) => sig.FLAG_bytes(),
+            Self::Empty => &[]
+        }
+    }
+
+    pub fn signature_bytes(&self) -> &[u8] {
+        match self {
+            Self::Ed25519(sig) => sig.signature_bytes(),
+            Self::BLS12381(sig) => sig.signature_bytes(),
+            Self::Empty => &[]
+        }
+    }
+
+    pub fn new<T>(value: &T, secret: &dyn signature::Signer<Signature>) -> Signature 
+    where
+        T: Signable<Vec<u8>>,
+    {
+        let mut message = Vec::new();
+        value.write(&mut message);
+        secret.sign(&message)
+    }
+}
 
 impl AsRef<[u8]> for Signature {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
+        match self {
+            Self::Ed25519(sig) => sig.bytes(),
+            Self::BLS12381(sig) => sig.bytes(),
+            Self::Empty => &[]
+        }
     }
 }
 
 impl signature::Signature for Signature {
     fn from_bytes(bytes: &[u8]) -> Result<Self, signature::Error> {
-        let val: [u8; SUI_SIGNATURE_LENGTH] =
-            bytes.try_into().map_err(|_| signature::Error::new())?;
-        Ok(Self(val))
+        match bytes.get(0..2).ok_or(signature::Error::new())? {
+            x if x == &Ed25519SuiSignature::FLAG[..] => Ok(Signature::Ed25519(Ed25519SuiSignature::from_bytes(bytes).map_err(|_| signature::Error::new())?)),
+            _ => Err(signature::Error::new()),
+        }
     }
 }
 
@@ -264,45 +309,148 @@ impl std::fmt::Debug for Signature {
     }
 }
 
-impl Signature {
-    pub fn new<T>(value: &T, secret: &dyn signature::Signer<Signature>) -> Self
+// impl std::fmt::Debug for Signature {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+//         let s = base64ct::Base64::encode_string(self.signature_bytes());
+//         let p = base64ct::Base64::encode_string(self.public_key_bytes());
+//         write!(f, "{s}@{p}")?;
+//         Ok(())
+//     }
+// }
+
+// 
+// BLS Port
+// 
+
+
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BLS12381SuiSignature (
+    #[schemars(with = "Base64")]
+    #[serde_as(as = "Bytes")]
+    [u8; Self::LENGTH]
+);
+
+impl SuiSignature for BLS12381SuiSignature {
+    type Sig = BLS12381Signature; 
+    type PubKey = BLS12381PublicKey;
+    type KeyPair = BLS12381KeyPair;
+    const FLAG: [u8; FLAG_LENGTH] = [0x25];
+
+    fn bytes(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+
+    fn from_bytes(bytes: &[u8]) -> SuiResult<Self> {
+        if bytes.len() != Self::LENGTH {
+            return Err(SuiError::InvalidSignature {
+                error: format!("Invalid signature length: {}", bytes.len()),
+            });
+        }
+        let mut result_bytes = [0u8; Self::LENGTH];
+        result_bytes.copy_from_slice(bytes);
+        return Ok(Self(result_bytes));
+    }
+}
+
+impl signature::Signer<Signature> for BLS12381KeyPair {
+    fn try_sign(&self, msg: &[u8]) -> Result<Signature, signature::Error> {
+        let signature_bytes: <<BLS12381KeyPair as KeypairTraits>::PrivKey as SigningKey>::Sig =
+            self.try_sign(msg)?;
+
+        let pk_bytes = self.public().as_ref();
+        let mut result_bytes = [0u8; BLS12381SuiSignature::LENGTH];
+
+        result_bytes[..FLAG_LENGTH].copy_from_slice(&BLS12381SuiSignature::FLAG);
+        result_bytes[FLAG_LENGTH..<Self as KeypairTraits>::Sig::LENGTH + FLAG_LENGTH].copy_from_slice(&signature_bytes.as_ref());
+        result_bytes[<Self as KeypairTraits>::Sig::LENGTH + FLAG_LENGTH..].copy_from_slice(pk_bytes);
+        Ok(Signature::BLS12381(BLS12381SuiSignature(result_bytes)))
+    }
+}
+
+// 
+// Ed25519 Sui Signature port
+// 
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Ed25519SuiSignature (
+    #[schemars(with = "Base64")]
+    #[serde_as(as = "Bytes")]
+    [u8; Self::LENGTH]
+);
+
+impl SuiSignature for Ed25519SuiSignature {
+    type Sig = Ed25519Signature; 
+    type PubKey = Ed25519PublicKey;
+    type KeyPair = Ed25519KeyPair;
+    const LENGTH: usize = Ed25519PublicKey::LENGTH + Ed25519Signature::LENGTH + FLAG_LENGTH;
+    const FLAG: [u8; FLAG_LENGTH] = [0xed];
+
+    fn bytes(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+
+    fn from_bytes(bytes: &[u8]) -> SuiResult<Self> {
+        if bytes.len() != Self::LENGTH {
+            return Err(SuiError::InvalidSignature {
+                error: format!("Invalid signature length: {}", bytes.len()),
+            });
+        }
+        let mut result_bytes = [0u8; Self::LENGTH];
+        result_bytes.copy_from_slice(bytes);
+        return Ok(Ed25519SuiSignature(result_bytes));
+    }
+}
+
+impl signature::Signer<Signature> for Ed25519KeyPair {
+    fn try_sign(&self, msg: &[u8]) -> Result<Signature, signature::Error> {
+        let signature_bytes: <<Ed25519KeyPair as KeypairTraits>::PrivKey as SigningKey>::Sig =
+            self.try_sign(msg)?;
+
+        let pk_bytes = self.public().as_ref();
+        let mut result_bytes = [0u8; Ed25519SuiSignature::LENGTH];
+
+        result_bytes[..FLAG_LENGTH].copy_from_slice(&Ed25519SuiSignature::FLAG);
+        result_bytes[FLAG_LENGTH..<Self as KeypairTraits>::Sig::LENGTH + FLAG_LENGTH].copy_from_slice(&signature_bytes.as_ref());
+        result_bytes[<Self as KeypairTraits>::Sig::LENGTH + FLAG_LENGTH..].copy_from_slice(pk_bytes);
+        Ok(Signature::Ed25519(Ed25519SuiSignature(result_bytes)))
+    }
+}
+
+// 
+// SuiSignature
+// 
+pub trait SuiSignature: Sized {
+    type Sig: Authenticator;
+    type PubKey: VerifyingKey<Sig = Self::Sig>;
+    type KeyPair: KeypairTraits<PubKey = Self::PubKey>;
+
+    const FLAG: [u8; FLAG_LENGTH];
+    const LENGTH: usize = Self::Sig::LENGTH + Self::PubKey::LENGTH + FLAG_LENGTH;
+
+    fn from_bytes(bytes: &[u8]) -> SuiResult<Self>;
+    fn bytes(&self) -> &[u8];
+
+    fn FLAG_bytes(&self) -> &[u8] {
+        &self.bytes()[..FLAG_LENGTH]
+    }
+
+    fn signature_bytes(&self) -> &[u8] {
+        &self.bytes()[FLAG_LENGTH..Self::Sig::LENGTH + FLAG_LENGTH]
+    }
+
+    fn public_key_bytes(&self) -> &[u8] {
+        &self.bytes()[FLAG_LENGTH + Self::Sig::LENGTH..]
+    }
+
+    fn verify<T>(&self, value: &T, author: SuiAddress) -> SuiResult<()>
     where
         T: Signable<Vec<u8>>,
     {
+        let (signature, public_key) = self.get_verification_inputs::<T>(author)?;
+
         let mut message = Vec::new();
         value.write(&mut message);
-        secret.sign(&message)
-    }
-
-    pub fn new_empty() -> Self {
-        Self([0u8; SUI_SIGNATURE_LENGTH])
-    }
-
-    pub fn signature_bytes(&self) -> &[u8] {
-        &self.0[..AccountSignature::LENGTH]
-    }
-
-    pub fn public_key_bytes(&self) -> &[u8] {
-        &self.0[AccountSignature::LENGTH..]
-    }
-
-    /// This performs signature verification on the passed-in signature, additionally checking
-    /// that the signature was performed with a PublicKey belonging to an expected author, indicated by its Sui Address
-    pub fn verify<T>(&self, value: &T, author: SuiAddress) -> Result<(), SuiError>
-    where
-        T: Signable<Vec<u8>>,
-    {
-        let mut message: Vec<u8> = Vec::new();
-        value.write(&mut message);
-        let (signature, public_key_bytes) = self.get_verification_inputs(author)?;
-
-        // is this a cryptographically correct public key?
-        // TODO: perform stricter key validation, sp. small order points, see https://github.com/MystenLabs/sui/issues/101
-        let public_key = AuthorityPublicKey::from_bytes(public_key_bytes.as_ref()).map_err(|err| {
-            SuiError::InvalidSignature {
-                error: err.to_string(),
-            }
-        })?;
 
         // perform cryptographic signature check
         public_key
@@ -312,14 +460,18 @@ impl Signature {
             })
     }
 
-    pub fn get_verification_inputs(
+    fn get_verification_inputs<T>(
         &self,
-        author: SuiAddress,
-    ) -> Result<(AccountSignature, AuthorityPublicKeyBytes), SuiError> {
+        author: SuiAddress
+    ) -> SuiResult<(Self::Sig, Self::PubKey)> {
         // Is this signature emitted by the expected author?
-        let public_key_bytes: AuthorityPublicKeyBytes =
-            AuthorityPublicKeyBytes::from_bytes(self.public_key_bytes()).expect("byte lengths match");
-        let received_addr: SuiAddress = (&public_key_bytes).into();
+        let bytes = self.public_key_bytes();
+        let pk = Self::PubKey::from_bytes(bytes)
+            .map_err(|_| SuiError::InvalidSignature {
+                error: format!("Invalid public key"),
+            })?;
+
+        let received_addr = SuiAddress::try_from(self.public_key_bytes())?;
         if received_addr != author {
             return Err(SuiError::IncorrectSigner {
                 error: format!("Signature get_verification_inputs() failure. Author is {author}, received address is {received_addr}")
@@ -327,16 +479,29 @@ impl Signature {
         }
 
         // deserialize the signature
-        let signature =
-            <AccountSignature as signature::Signature>::from_bytes(self.signature_bytes())
-                .map_err(|err| SuiError::InvalidSignature {
-                    error: err.to_string(),
-                })?;
+        let signature = Self::Sig::from_bytes(self.signature_bytes()).map_err(|err| {
+            SuiError::InvalidSignature {
+                error: err.to_string(),
+            }
+        })?;
+        Ok((signature, pk))
+    }
 
-        // serialize the message (see BCS serialization for determinism)
-        Ok((signature, public_key_bytes))
+    const SIG_AND_FLAG_LENGTH: usize = Self::Sig::LENGTH + FLAG_LENGTH;
+
+    fn _try_sign(kp: Self::KeyPair, msg: &[u8]) -> Result<Self, signature::Error> {
+        let signature_bytes: Self::Sig = kp.try_sign(msg)?;
+        let pk_bytes = kp.public().as_ref();
+        let mut result_bytes: Vec<u8> = vec![0u8; Self::LENGTH];
+        
+        result_bytes[..FLAG_LENGTH].copy_from_slice(&Self::FLAG);
+        result_bytes[FLAG_LENGTH..Self::SIG_AND_FLAG_LENGTH].copy_from_slice(&signature_bytes.as_ref());
+        result_bytes[Self::SIG_AND_FLAG_LENGTH..].copy_from_slice(pk_bytes);
+
+        Ok(Self(result_bytes))
     }
 }
+ 
 
 /// AuthoritySignInfoTrait is a trait used specifically for a few structs in messages.rs
 /// to template on whether the struct is signed by an authority. We want to limit how
@@ -449,7 +614,7 @@ impl<const STRONG_THRESHOLD: bool> AuthorityQuorumSignInfo<STRONG_THRESHOLD> {
     pub fn new(epoch: EpochId) -> Self {
         AuthorityQuorumSignInfo {
             epoch,
-            signature: AggregateAccountSignature::default(),
+            signature: AggregateAuthoritySignature::default(),
             signers_map: RoaringBitmap::new(),
         }
     }

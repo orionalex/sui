@@ -532,6 +532,10 @@ impl<S> TransactionEnvelope<S> {
         obligation: &mut VerificationObligation<AggregateAccountSignature>,
         idx: usize,
     ) -> SuiResult<()> {
+        if matches!(self.tx_signature, Signature::Empty) {
+            return Err(SuiError::InvalidSignature { error: "Signatures don't match".to_string() });
+        }
+
         // We use this flag to see if someone has checked this before
         // and therefore we can skip the check. Note that the flag has
         // to be set to true manually, and is not set by calling this
@@ -540,30 +544,34 @@ impl<S> TransactionEnvelope<S> {
             return Ok(());
         }
 
-        let (signature, public_key) = self
-            .tx_signature
-            .get_verification_inputs(self.data.sender)?;
-        let key = public_key
-            .try_into()
-            .map_err(|_| SuiError::InvalidSignature {
-                error: "Invalid public key".to_owned(),
-            })?;
+        // let (signature, public_key) = self
+        //     .tx_signature
+        //     .get_verification_inputs(self.data.sender)?;
+        // let key = public_key
+        //     .try_into()
+        //     .map_err(|_| SuiError::InvalidSignature {
+        //         error: "Invalid public key".to_owned(),
+        //     })?;
 
-        obligation
-            .public_keys
-            .get_mut(idx)
-            .ok_or(SuiError::InvalidAuthenticator)?
-            .push(key);
-        obligation
-            .signatures
-            .get_mut(idx)
-            .ok_or(SuiError::InvalidAuthenticator)?
-            .add_signature(signature)
-            .map_err(|_| SuiError::InvalidSignature {
-                error: "Failed to add signature to obligation".to_string(),
-            })?;
+        // obligation
+        //     .public_keys
+        //     .get_mut(idx)
+        //     .ok_or(SuiError::InvalidAuthenticator)?
+        //     .push(key);
+        // obligation
+        //     .signatures
+        //     .get_mut(idx)
+        //     .ok_or(SuiError::InvalidAuthenticator)?
+        //     .add_signature(signature)
+        //     .map_err(|_| SuiError::InvalidSignature {
+        //         error: "Failed to add signature to obligation".to_string(),
+        //     })?;
 
         Ok(())
+    }
+
+    pub fn verify_sender_signature(&self) -> SuiResult<()> {
+        self.tx_signature.verify(&self.data, self.data.sender)
     }
 
     pub fn sender_address(&self) -> SuiAddress {
@@ -674,12 +682,7 @@ impl Transaction {
     }
 
     pub fn verify(&self) -> Result<(), SuiError> {
-        let mut obligation = VerificationObligation::default();
-
-        let idx = obligation.add_message(&self.data);
-
-        self.add_sender_sig_to_verification_obligation(&mut obligation, idx)?;
-        obligation.verify_all().map(|_| ())
+        self.verify_sender_signature()
     }
 }
 
@@ -745,7 +748,7 @@ impl SignedTransaction {
             transaction_digest: OnceCell::new(),
             is_verified: false,
             data,
-            tx_signature: Signature::new_empty(),
+            tx_signature: Signature::Empty,
             auth_sign_info: AuthoritySignInfo {
                 epoch: next_epoch,
                 authority,
@@ -760,7 +763,10 @@ impl SignedTransaction {
 
         let idx = obligation.add_message(&self.data);
 
-        self.add_sender_sig_to_verification_obligation(&mut obligation, idx)?;
+        if self.add_sender_sig_to_verification_obligation(&mut obligation, idx).is_err() {
+            self.verify_sender_signature()?;
+        }
+        
         self.auth_sign_info
             .add_to_verification_obligation(committee, &mut obligation, idx)?;
 
@@ -1716,23 +1722,18 @@ impl CertifiedTransaction {
         }
 
         let mut obligation = VerificationObligation::default();
-        self.add_to_verification_obligation(committee, &mut obligation)?;
-        obligation.verify_all().map(|_| ())
-    }
-
-    fn add_to_verification_obligation(
-        &self,
-        committee: &Committee,
-        obligation: &mut VerificationObligation<AggregateAuthoritySignature>,
-    ) -> SuiResult<()> {
         // Add the obligation of the authority signature verifications.
         let idx = obligation.add_message(&self.data);
 
         // Add the obligation of the sender signature verification.
-        self.add_sender_sig_to_verification_obligation(obligation, idx)?;
+        if self.add_sender_sig_to_verification_obligation(&mut obligation, idx).is_err() {
+            self.verify_sender_signature()?;
+        }
 
         self.auth_sign_info
-            .add_to_verification_obligation(committee, obligation, idx)
+            .add_to_verification_obligation(committee, &mut obligation, idx)?;
+
+        obligation.verify_all().map(|_| ())
     }
 }
 
