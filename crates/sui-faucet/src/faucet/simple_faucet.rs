@@ -112,7 +112,7 @@ impl SimpleFaucet {
         // TODO: move this function to impl WalletContext{} and reuse in wallet_commands
         let context = &self.wallet;
         let data = context
-            .client
+            .gateway
             .split_coin(
                 signer,
                 coin_id,
@@ -123,7 +123,7 @@ impl SimpleFaucet {
             .await?;
         let signature = context.keystore.sign(&signer, &data.to_bytes())?;
         let response = context
-            .client
+            .gateway
             .execute_transaction(Transaction::new(data, signature))
             .await?
             .to_split_coin_response()?
@@ -142,12 +142,12 @@ impl SimpleFaucet {
         let context = &self.wallet;
 
         let data = context
-            .client
+            .gateway
             .transfer_object(signer, coin_id, Some(gas_object_id), budget, recipient)
             .await?;
         let signature = context.keystore.sign(&signer, &data.to_bytes())?;
         let effects = context
-            .client
+            .gateway
             .execute_transaction(Transaction::new(data, signature))
             .await?
             .to_effect_response()?

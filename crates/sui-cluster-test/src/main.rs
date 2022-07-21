@@ -65,7 +65,7 @@ impl ClusterTest {
         let (receipent_addr, _) = get_key_pair();
         let obj_to_transfer = coins.remove(0);
         let data = wallet_context
-            .client
+            .gateway
             .transfer_object(
                 signer,
                 *obj_to_transfer.id(),
@@ -103,7 +103,7 @@ impl ClusterTest {
         let amounts = vec![1, (original_value - 2) / 2];
 
         let data = wallet_context
-            .client
+            .gateway
             .split_coin(signer, *primary_coin.id(), amounts, Some(gas_obj_id), 5000)
             .await
             .expect("Failed to get transaction data for coin split");
@@ -184,7 +184,7 @@ impl ClusterTest {
     ) {
         let wallet_context = self.wallet_context();
         let data = wallet_context
-            .client
+            .gateway
             .merge_coins(signer, primary_coin, coin_to_merge, Some(gas_obj_id), 5000)
             .await
             .expect("Failed to get transaction data for coin merge");
@@ -198,7 +198,7 @@ impl ClusterTest {
             .sign(&self.context.address, &txn_data.to_bytes())
             .unwrap_or_else(|e| panic!("Failed to sign transaction for {}. {}", desc, e));
         self.wallet_context()
-            .client
+            .gateway
             .execute_transaction(Transaction::new(txn_data, signature))
             .await
             .unwrap_or_else(|e| panic!("Failed to execute transaction for {}. {}", desc, e))
@@ -276,7 +276,7 @@ impl ClusterTest {
             .reference
             .object_id;
         let object_read = wallet_context
-            .client
+            .gateway
             .get_object(nft_id)
             .await
             .expect("Failed to get created NFT object");
@@ -305,7 +305,7 @@ impl ClusterTest {
         let object_id = obj_id;
         let object_info = self
             .wallet_context()
-            .client
+            .gateway
             .get_object(object_id)
             .await
             .unwrap_or_else(|err| {

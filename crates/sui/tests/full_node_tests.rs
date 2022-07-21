@@ -40,7 +40,7 @@ async fn transfer_coin(
     let sender = context.config.accounts.get(0).cloned().unwrap();
     let receiver = context.config.accounts.get(1).cloned().unwrap();
 
-    let object_refs = context.client.get_objects_owned_by_address(sender).await?;
+    let object_refs = context.gateway.get_objects_owned_by_address(sender).await?;
     let object_to_send = object_refs.get(1).unwrap().object_id;
 
     // Send an object
@@ -70,7 +70,7 @@ async fn get_account_and_objects(
     context: &mut WalletContext,
 ) -> Result<(SuiAddress, Vec<SuiObjectInfo>), anyhow::Error> {
     let sender = context.config.accounts.get(0).cloned().unwrap();
-    let object_refs = context.client.get_objects_owned_by_address(sender).await?;
+    let object_refs = context.gateway.get_objects_owned_by_address(sender).await?;
     Ok((sender, object_refs))
 }
 
@@ -211,7 +211,7 @@ async fn publish_basics_package(context: &WalletContext, sender: SuiAddress) -> 
             .collect();
 
         let data = context
-            .client
+            .gateway
             .publish(sender, all_module_bytes, None, 50000)
             .await
             .unwrap();
@@ -221,7 +221,7 @@ async fn publish_basics_package(context: &WalletContext, sender: SuiAddress) -> 
     };
 
     let resp = context
-        .client
+        .gateway
         .execute_transaction(transaction)
         .await
         .unwrap();
@@ -247,7 +247,7 @@ async fn move_transaction(
     info!(?package_ref, ?arguments, "move_transaction");
 
     let data = context
-        .client
+        .gateway
         .move_call(
             sender,
             package_ref.0,
@@ -264,7 +264,7 @@ async fn move_transaction(
     let signature = context.keystore.sign(&sender, &data.to_bytes()).unwrap();
     let tx = Transaction::new(data, signature);
 
-    context.client.execute_transaction(tx).await.unwrap()
+    context.gateway.execute_transaction(tx).await.unwrap()
 }
 
 async fn publish_package_and_make_counter(
