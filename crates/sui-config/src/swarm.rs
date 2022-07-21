@@ -8,14 +8,14 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use sui_types::committee::Committee;
-use sui_types::crypto::{get_key_pair_from_rng, KeyPair};
+use sui_types::crypto::{get_key_pair_from_rng, AuthorityKeyPair};
 
 /// This is a config that is used for testing or local use as it contains the config and keys for
 /// all validators
 #[derive(Debug, Deserialize, Serialize)]
 pub struct NetworkConfig {
     pub validator_configs: Vec<NodeConfig>,
-    pub account_keys: Vec<KeyPair>,
+    pub account_keys: Vec<AuthorityKeyPair>,
     pub genesis: genesis::Genesis,
 }
 
@@ -56,7 +56,7 @@ impl NetworkConfig {
     /// Generate a fullnode config based on this `NetworkConfig`. This is useful if you want to run
     /// a fullnode and have it connect to a network defined by this `NetworkConfig`.
     pub fn generate_fullnode_config(&self) -> NodeConfig {
-        let key_pair = Arc::new(get_key_pair_from_rng(&mut OsRng).1);
+        let key_pair: Arc<AuthorityKeyPair> = Arc::new(get_key_pair_from_rng(&mut OsRng).1);
         let validator_config = &self.validator_configs[0];
 
         let mut db_path = validator_config.db_path.clone();

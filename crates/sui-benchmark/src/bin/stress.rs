@@ -15,7 +15,7 @@ use sui_core::authority_aggregator::AuthorityAggregator;
 use sui_core::authority_client::NetworkAuthorityClient;
 use sui_quorum_driver::QuorumDriverHandler;
 use sui_types::base_types::{ObjectID, ObjectRef, SuiAddress};
-use sui_types::crypto::{get_key_pair, EmptySignInfo, KeyPair};
+use sui_types::crypto::{get_key_pair, EmptySignInfo, AccountKeyPair};
 use sui_types::messages::{
     ExecuteTransactionRequest, ExecuteTransactionRequestType, ExecuteTransactionResponse,
     Transaction, TransactionEnvelope,
@@ -98,7 +98,7 @@ enum Payload {
 impl Payload {
     fn make_transaction(
         &self,
-        keypairs: &HashMap<SuiAddress, KeyPair>,
+        keypairs: &HashMap<SuiAddress, AccountKeyPair>,
     ) -> TransactionEnvelope<EmptySignInfo> {
         match self {
             Payload::SharedCounterTxPayload(((package_ref, counter_id), (gas, _))) => {
@@ -167,11 +167,11 @@ async fn init_object_transfer_benchmark(
     configs: NetworkConfig,
 ) -> (
     Vec<Payload>,
-    Arc<HashMap<SuiAddress, KeyPair>>,
+    Arc<HashMap<SuiAddress, AccountKeyPair>>,
     AuthorityAggregator<NetworkAuthorityClient>,
 ) {
     // create several accounts to transfer object between
-    let accounts: Arc<HashMap<SuiAddress, KeyPair>> =
+    let accounts: Arc<HashMap<SuiAddress, AccountKeyPair>> =
         Arc::new((0..num_accounts).map(|_| get_key_pair()).collect());
     // create enough gas to do those transfers
     let gas: Vec<Vec<Object>> = (0..count)
@@ -231,7 +231,7 @@ async fn init_shared_counter_benchmark(
     configs: NetworkConfig,
 ) -> (
     Vec<Payload>,
-    Arc<HashMap<SuiAddress, KeyPair>>,
+    Arc<HashMap<SuiAddress, AccountKeyPair>>,
     AuthorityAggregator<NetworkAuthorityClient>,
 ) {
     // create enough gas
@@ -287,7 +287,7 @@ async fn init_shared_counter_benchmark(
 
 async fn run(
     clients: AuthorityAggregator<NetworkAuthorityClient>,
-    addresses: Arc<HashMap<SuiAddress, KeyPair>>,
+    addresses: Arc<HashMap<SuiAddress, AccountKeyPair>>,
     payloads: Vec<Payload>,
     opts: Opts,
 ) {
